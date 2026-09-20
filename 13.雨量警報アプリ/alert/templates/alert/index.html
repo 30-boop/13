@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>大雨警報マップ|東京・神奈川・千葉</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+  <style>
+    :root {
+      --ink: #17212b;
+      --sub: #56626e;
+      --paper: #eef1f4;
+      --panel: #ffffff;
+      --line: #d3d9df;
+      --warning: #c62828;
+      --special: #4a148c;
+      --clear: #1b6b4a;
+      --unknown: #4d5964;
+      --font: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.7;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    a { color: inherit; }
+    a:focus-visible { outline: 3px solid #1a73e8; outline-offset: 2px; }
+
+    /* 状態バナー: 色と文言で今の状況を最初に伝える */
+    .status { background: var(--unknown); color: #fff; padding: 1rem 1.25rem; }
+    .status-special .status { background: var(--special); }
+    .status-warning .status { background: var(--warning); }
+    .status-clear .status { background: var(--clear); }
+    .status h1 { margin: 0; font-size: clamp(1.4rem, 4vw, 2rem); font-weight: 800; line-height: 1.3; }
+    .status p { margin: 0.25rem 0 0; font-size: 0.95rem; }
+
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-areas: "evac" "map" "areas" "foot";
+    }
+    .evac { grid-area: evac; }
+    .map-wrap { grid-area: map; position: relative; min-height: 55vh; }
+    .areas { grid-area: areas; }
+    .foot { grid-area: foot; }
+    #map { position: absolute; inset: 0; }
+
+    .evac, .areas, .foot {
+      background: var(--panel);
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .status-special .evac { border-left: 6px solid var(--special); }
+    .status-warning .evac { border-left: 6px solid var(--warning); }
+    h2 { margin: 0 0 0.5rem; font-size: 1.15rem; }
+    .lead { margin: 0; font-weight: 700; }
+
+    .evac ul { list-style: none; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0.85rem; }
+    .evac li { padding-left: 0.75rem; border-left: 3px solid var(--line); }
+    .evac strong { display: block; font-size: 1.05rem; }
+    .evac li span { color: var(--sub); font-size: 0.95rem; }
+
+    .areas ul { list-style: none; margin: 0; padding: 0; }
+    .areas li {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.4rem 0 0.4rem 0.75rem;
+      border-left: 4px solid var(--warning);
+      border-bottom: 1px solid var(--line);
+    }
+    .areas li.special { border-left-color: var(--special); }
+    .areas .kind { font-weight: 700; white-space: nowrap; }
+    .areas p { margin: 0; color: var(--sub); }
+
+    .foot { font-size: 0.85rem; color: var(--sub); }
+    .foot p { margin: 0 0 0.4rem; }
+
+    @media (min-width: 900px) {
+      main {
+        grid-template-columns: 1fr 400px;
+        grid-template-rows: auto 1fr auto;
+        grid-template-areas: "map evac" "map areas" "map foot";
+      }
+      .evac, .areas, .foot { border-left: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body class="status-{{ status }}">
+  <header class="status" role="{% if status == 'special' or status == 'warning' %}alert{% else %}status{% endif %}">
+    {% if status == "special" %}
+      <h1>大雨特別警報が発表されています</h1>
+    {% elif status == "warning" %}
+      <h1>大雨警報が発表されています</h1>
+    {% elif status == "unknown" %}
+      <h1>警報情報を取得できませんでした</h1>
+    {% else %}
+      <h1>大雨警報は発表されていません</h1>
+    {% endif %}
+    <p>対象: 東京都・神奈川県・千葉県</p>
+    {% if updated %}<p>気象庁の発表: {{ updated }}</p>{% endif %}
+    {% if failed %}
+      <p>取得できなかった地域: {{ failed|join:"、" }}。<a href="https://www.jma.go.jp/bosai/warning/">気象庁の防災情報</a>で確認してください。</p>
+    {% endif %}
+  </header>
+
+  <main>
+    {% if items %}
+    <section class="evac" aria-labelledby="evac-title">
+      <h2 id="evac-title">避難のために</h2>
+      <p class="lead">{{ lead }}</p>
+      <ul>
+        {% for head, detail in items %}
+        <li><strong>{{ head }}</strong><span>{{ detail }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    <section class="map-wrap" aria-label="大雨警報が出ている地域の地図">
+      <div id="map"></div>
+    </section>
+
+    <section class="areas" aria-labelledby="areas-title">
+      <h2 id="areas-title">発表中の地域</h2>
+      {% if alerts %}
+      <ul>
+        {% for a in alerts %}
+        <li class="{{ a.level }}">
+          <span>{{ a.prefecture }}{{ a.name }}</span>
+          <span class="kind">{{ a.warnings|join:"・" }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>現在、発表中の地域はありません。</p>
+      {% endif %}
+    </section>
+
+    <footer class="foot">
+      <p>5分ごとに自動で更新します。</p>
+      <p>避難するタイミングや避難先は、お住まいの市区町村の避難情報に従ってください。</p>
+      <p>出典: <a href="https://www.jma.go.jp/bosai/warning/">気象庁 防災情報</a>、<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院 地理院タイル</a></p>
+    </footer>
+  </main>
+
+  {{ alerts|json_script:"alerts-data" }}
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script>
+    (function () {
+      var alerts = JSON.parse(document.getElementById("alerts-data").textContent);
+      var colors = { special: "#4a148c", warning: "#c62828" };
+
+      function esc(text) {
+        var div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      var map = L.map("map");
+      L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", {
+        maxZoom: 18,
+        attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a>'
+      }).addTo(map);
+
+      var points = [];
+      alerts.forEach(function (a) {
+        L.circleMarker([a.lat, a.lon], {
+          radius: a.level === "special" ? 15 : 12,
+          color: "#ffffff",
+          weight: 2,
+          fillColor: colors[a.level],
+          fillOpacity: 0.9
+        })
+          .addTo(map)
+          .bindPopup("<strong>" + esc(a.prefecture + a.name) + "</strong><br>" + esc(a.warnings.join("・")));
+        points.push([a.lat, a.lon]);
+      });
+
+      if (points.length) {
+        map.fitBounds(points, { padding: [48, 48], maxZoom: 11 });
+      } else {
+        map.fitBounds([[34.9, 138.9], [36.1, 140.9]]); // 東京・神奈川・千葉あたり
+      }
+    })();
+  </script>
+</body>
+</html>
